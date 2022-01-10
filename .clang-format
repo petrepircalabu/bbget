@@ -1,0 +1,31 @@
+BasedOnStyle: WebKit
+IndentWidth: 4
+TabWidth: 4
+UseTab: ForIndentation
+AlignAfterOpenBracket: true
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AllowShortBlocksOnASingleLine: false
+AllowShortFunctionsOnASingleLine: false
+
+AlignEscapedNewlinesLeft: true
+# AlignEscapedNewlines: Left
+
+AlignTrailingComments: true
+ReflowComments: true
+IndentCaseLabels: false
+ColumnLimit: 100
+
+# BreakConstructorInitializers: BeforeColon
+BreakConstructorInitializersBeforeComma: false
+
+Cpp11BracedListStyle: true
+Language: Cpp
+NamespaceIndentation: None
+Standard: Cpp11
+SpacesInParentheses: false
+SpaceInEmptyParentheses: false
+IndentWrappedFunctionNames: false
+SortIncludes: false
+SpaceBeforeAssignmentOperators: true
+AlwaysBreakBeforeMultilineStrings: true
