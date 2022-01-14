@@ -1,4 +1,9 @@
-add_executable(bbget main.cpp)
+add_executable(bbget
+    boost_url_link.cpp
+    connection.hpp
+    connection.cpp
+    main.cpp
+)
 
 target_link_libraries(bbget PRIVATE
     Boost::program_options

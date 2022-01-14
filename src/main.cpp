@@ -1,3 +1,5 @@
+#include "connection.hpp"
+#include <boost/asio/io_context.hpp>
 #include <boost/program_options.hpp>
 #include <spdlog/fmt/ostr.h>
 #include <spdlog/spdlog.h>
@@ -60,8 +62,12 @@ int main(int argc, char* argv[])
 		std::cout << e.what() << "\n";
 	}
 
+	// Set-up the io context;
+	boost::asio::io_context ioc;
+
 	for (auto&& url : urls) {
 		spdlog::debug("Downloading {}", url);
+		bbget::http::outbound::create_connection(ioc, url);
 	}
 
 	return 0;
