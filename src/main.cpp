@@ -15,11 +15,17 @@ int main(int argc, char* argv[])
 		    = "BBGet v0.1.0 - a Boost Beast based non-interactive network retriever\n"
 		      "Usage: bbget [OPTION]... [URL]...";
 		namespace po = boost::program_options;
+
 		po::options_description general("General options");
 		general.add_options()("help", "produce a help message")("version",
 		                                                        "output the version number");
+
+		po::options_description log_and_config("Logging and Configuration");
+		general.add_options()("debug,d", "output the version number");
+
 		po::options_description all("");
 		all.add(general);
+		all.add(log_and_config);
 		all.add_options()("urls", po::value<std::vector<std::string>>(), "urls");
 
 		po::positional_options_description p;
@@ -45,10 +51,17 @@ int main(int argc, char* argv[])
 			return -1;
 		}
 
+		if (vm.count("debug"))
+			spdlog::set_level(spdlog::level::debug);
+
 		urls = vm["urls"].as<std::vector<std::string>>();
 
 	} catch (std::exception& e) {
 		std::cout << e.what() << "\n";
+	}
+
+	for (auto&& url : urls) {
+		spdlog::debug("Downloading {}", url);
 	}
 
 	return 0;
