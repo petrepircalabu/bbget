@@ -8,5 +8,7 @@ add_executable(bbget
 target_link_libraries(bbget PRIVATE
     Boost::program_options
     Boost::URL
+    OpenSSL::SSL
+    OpenSSL::Crypto
     spdlog::spdlog
 )

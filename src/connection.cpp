@@ -1,7 +1,10 @@
 #include "connection.hpp"
 #include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl/stream.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/url/url.hpp>
 #include <spdlog/fmt/ostr.h>
@@ -13,9 +16,9 @@ namespace bbget {
 namespace http {
 namespace outbound {
 
-class connection {
+class plain_connection {
 public:
-	connection(boost::asio::io_context& ioc, boost::urls::url&& url)
+	plain_connection(boost::asio::io_context& ioc, boost::urls::url&& url)
 	    : ioc_(ioc)
 	    , url_(std::forward<boost::urls::url>(url))
 	{
@@ -30,19 +33,23 @@ public:
 		std::string host = url_.host();
 		std::string port = url_.port();
 
-		auto const results = resolver.resolve(host, port);
+		boost::beast::http::request<boost::beast::http::string_body> req(
+		    boost::beast::http::verb::get, url_.c_str(), 11);
+
+		req.set(boost::beast::http::field::host, host);
+		req.set(boost::beast::http::field::user_agent, "gogu");
+
+		auto const results = resolver.resolve(host, port, ec);
+		if (ec || results.empty()) {
+			spdlog::error("failed to resolve to {}:{}, error {}", host, port, ec.what());
+			return;
+		}
 
 		stream.connect(results, ec);
 		if (ec) {
 			spdlog::error("failed to connect to {}:{}, error {}", host, port, ec.what());
 			return;
 		}
-
-		boost::beast::http::request<boost::beast::http::string_body> req(
-		    boost::beast::http::verb::get, url_.c_str(), 11);
-
-		req.set(boost::beast::http::field::host, host);
-		req.set(boost::beast::http::field::user_agent, "gogu");
 
 		boost::beast::http::write(stream, req);
 
@@ -65,6 +72,85 @@ private:
 	boost::urls::url         url_;
 };
 
+class ssl_connection {
+public:
+	ssl_connection(boost::asio::io_context& ioc, boost::urls::url&& url)
+	    : ioc_(ioc)
+	    , ssl_ctx_(boost::asio::ssl::context::tlsv13_client)
+	    , url_(std::forward<boost::urls::url>(url))
+	{
+	}
+
+	void run()
+	{
+		std::string host = url_.host();
+		std::string port = url_.port();
+
+		boost::beast::http::request<boost::beast::http::string_body> req(
+		    boost::beast::http::verb::get, url_.c_str(), 11);
+		req.set(boost::beast::http::field::host, host);
+		req.set(boost::beast::http::field::user_agent, "gogu");
+
+		boost::system::error_code ec {};
+
+		boost::beast::tcp_stream stream {ioc_};
+
+		auto const results = resolve(host, port, ec);
+		if (ec || results.empty()) {
+			spdlog::error("failed to resolve to {}:{}, error {}", host, port, ec.what());
+			return;
+		}
+
+		stream.connect(results, ec);
+		if (ec) {
+			spdlog::error("failed to connect to {}:{}, error {}", host, port, ec.what());
+			return;
+		}
+
+		ssl_ctx_.set_verify_mode(boost::asio::ssl::context::verify_peer
+		                         | boost::asio::ssl::context::verify_fail_if_no_peer_cert);
+		ssl_ctx_.set_default_verify_paths();
+
+		boost::beast::ssl_stream<boost::beast::tcp_stream> ssl_stream(std::move(stream), ssl_ctx_);
+
+		ssl_stream.handshake(boost::asio::ssl::stream_base::handshake_type::client, ec);
+		if (ec) {
+			spdlog::error("Handshake failed, error {}", ec.what());
+			return;
+		}
+
+		boost::beast::http::write(ssl_stream, req);
+
+		boost::beast::flat_buffer                                     buffer;
+		boost::beast::http::response<boost::beast::http::string_body> res;
+
+		boost::beast::http::read(ssl_stream, buffer, res, ec);
+		if (ec) {
+			spdlog::error("failed toread server response, error {}", ec.what());
+			return;
+		}
+
+		spdlog::info("{}", res);
+
+		ssl_stream.shutdown(ec);
+		boost::beast::get_lowest_layer(ssl_stream).socket().close();
+	}
+
+protected:
+	inline boost::asio::ip::basic_resolver_results<boost::asio::ip::tcp>
+	resolve(std::string_view host, std::string_view port, boost::system::error_code& ec)
+	{
+		boost::asio::ip::tcp::resolver resolver(ioc_);
+		return resolver.resolve(host, port, ec);
+	}
+
+private:
+	boost::asio::io_context&  ioc_;
+	boost::asio::ssl::context ssl_ctx_;
+
+	boost::urls::url url_;
+};
+
 void create_connection(boost::asio::io_context& ioc, const std::string& url_string)
 {
 	auto res = boost::urls::parse_uri(url_string);
@@ -84,8 +170,13 @@ void create_connection(boost::asio::io_context& ioc, const std::string& url_stri
 	if (!url.has_port())
 		url.set_port(url.scheme_id() == boost::urls::scheme::https ? 443 : 80);
 
-	auto conn = std::make_shared<connection>(ioc, std::move(url));
-	conn->run();
+	if (url.scheme_id() == boost::urls::scheme::https) {
+		auto conn = std::make_shared<ssl_connection>(ioc, std::move(url));
+		conn->run();
+	} else {
+		auto conn = std::make_shared<plain_connection>(ioc, std::move(url));
+		conn->run();
+	}
 }
 
 } // namespace outbound
