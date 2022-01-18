@@ -1,5 +1,7 @@
 add_executable(bbget
     boost_url_link.cpp
+    certs.hpp
+    certs.cpp
     connection.hpp
     connection.cpp
     main.cpp

@@ -1,4 +1,5 @@
 #include "connection.hpp"
+#include "certs.hpp"
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl/stream.hpp>
@@ -109,11 +110,16 @@ public:
 
 		ssl_ctx_.set_verify_mode(boost::asio::ssl::context::verify_peer
 		                         | boost::asio::ssl::context::verify_fail_if_no_peer_cert);
+#ifdef WIN32
+		certs::add_windows_root_certs(ssl_ctx_);
+#else
 		ssl_ctx_.set_default_verify_paths(ec);
 		if (ec) {
-			spdlog::error("Cannot set the SSL context default paths, error {}", host, port, ec.what());
+			spdlog::error("Cannot set the SSL context default paths, error {}", host, port,
+			              ec.what());
 			return;
 		}
+#endif
 
 		boost::beast::ssl_stream<boost::beast::tcp_stream> ssl_stream(std::move(stream), ssl_ctx_);
 
