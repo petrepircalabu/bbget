@@ -18,3 +18,4 @@ include(compile-options)
 include(dependencies)
 
 add_subdirectory(src)
+add_subdirectory(test)
