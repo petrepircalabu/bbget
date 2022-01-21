@@ -13,7 +13,7 @@ endif()
 add_library(boost-url INTERFACE)
 target_include_directories(boost-url INTERFACE "${boost-url_SOURCE_DIR}/include")
 # Use Header-only boosturl.
-target_compile_definitions(boost-url INTERFACE BOOST_URL_NO_LIB)
+target_compile_definitions(boost-url INTERFACE BOOST_URL_NO_LIB BOOST_URL_STATIC_LINK)
 target_link_libraries(boost-url INTERFACE Boost::system)
 
 add_library(Boost::URL ALIAS boost-url)
