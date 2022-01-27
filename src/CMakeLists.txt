@@ -4,6 +4,9 @@ add_library(bbget-obj OBJECT
     certs.cpp
     connection.hpp
     connection.cpp
+    downloader.hpp
+    overload.hpp
+    stream.hpp
 )
 
 target_link_libraries(bbget-obj PUBLIC

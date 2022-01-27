@@ -1,9 +1,13 @@
+#include "certs.hpp"
 #include "connection.hpp"
+#include "downloader.hpp"
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ssl/context.hpp>
 #include <boost/program_options.hpp>
 #include <spdlog/fmt/ostr.h>
 #include <spdlog/spdlog.h>
 #include <iostream>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -63,11 +67,28 @@ int main(int argc, char* argv[])
 	}
 
 	// Set-up the io context;
-	boost::asio::io_context ioc;
+	boost::asio::io_context   ioc;
+	boost::asio::ssl::context ssl_ctx(boost::asio::ssl::context::tlsv13_client);
 
+	ssl_ctx.set_verify_mode(boost::asio::ssl::context::verify_peer
+	                        | boost::asio::ssl::context::verify_fail_if_no_peer_cert);
+#ifdef WIN32
+	bbget::certs::add_windows_root_certs(ssl_ctx);
+#else
+	ssl_ctx.set_default_verify_paths();
+#endif
+
+	bbget::http::outbound::connection_ops ops;
 	for (auto&& url : urls) {
-		spdlog::debug("Downloading {}", url);
-		bbget::http::outbound::create_connection(ioc, url);
+		try {
+			bbget::http::downloader<bbget::http::outbound::connection_ops> session(
+			    ioc, ssl_ctx, url, std::move(ops));
+			session();
+		} catch (const boost::system::system_error& e) {
+			spdlog::error("{}", e.what());
+		} catch (const std::exception& e) {
+			spdlog::error("{}", e.what());
+		}
 	}
 
 	return 0;
