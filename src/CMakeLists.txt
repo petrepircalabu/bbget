@@ -6,11 +6,14 @@ add_library(bbget-obj OBJECT
     connection.cpp
     downloader.hpp
     overload.hpp
+    proxy.hpp
+    proxy.cpp
     stream.hpp
 )
 
 target_link_libraries(bbget-obj PUBLIC
     Boost::URL
+    cppcodec
     OpenSSL::SSL
     OpenSSL::Crypto
     spdlog::spdlog

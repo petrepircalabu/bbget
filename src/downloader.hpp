@@ -1,6 +1,7 @@
 #ifndef HTTP_DOWNLOADER_HPP
 #define HTTP_DOWNLOADER_HPP
 
+#include "proxy.hpp"
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/beast/core.hpp>
@@ -19,11 +20,12 @@ namespace http {
 template <typename ConnectionOps> class downloader {
 public:
 	downloader(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_ctx,
-	           const std::string& url, ConnectionOps&& ops)
+	           const std::string& url, bbget::proxy::config&& proxy_config, ConnectionOps&& ops)
 	    : ioc_(ioc)
 	    , ssl_ctx_(ssl_ctx)
 	    , url_(url)
 	    , ops_(std::forward<ConnectionOps>(ops))
+	    , proxy_config_(std::forward<bbget::proxy::config>(proxy_config))
 	{
 	}
 
@@ -51,14 +53,25 @@ public:
 			bool        ssl  = url.scheme_id() == boost::urls::scheme::https;
 			std::string port = (url.has_port()) ? std::string(url.port()) : ssl ? "443" : "80";
 
-			auto stream = ops_.create(ioc_, ssl_ctx_, host, port, ssl);
+			auto stream = (proxy_config_.enabled)
+			    ? ops_.create(ioc_, ssl_ctx_, proxy_config_.host, proxy_config_.port,
+			                  proxy_config_.ssl)
+			    : ops_.create(ioc_, ssl_ctx_, host, port, ssl);
 
 			boost::beast::http::request<boost::beast::http::string_body> req(
-			    boost::beast::http::verb::get, url_.c_str(), 11);
+			    boost::beast::http::verb::get,
+			    proxy_config_.enabled ? url_ : std::string(url.encoded_path()), 11);
 
 			req.set(boost::beast::http::field::host, host);
 			req.set(boost::beast::http::field::user_agent, "bbget");
 
+			if (proxy_config_.enabled && !proxy_config_.auth.empty()) {
+				req.set(boost::beast::http::field::proxy_authorization,
+				        "Basic: " + proxy_config_.auth);
+			}
+
+			spdlog::debug("Sending request...");
+			spdlog::debug("{}", req);
 			boost::beast::http::write(stream, req);
 
 			boost::beast::flat_buffer                                           buffer;
@@ -104,6 +117,7 @@ private:
 	boost::asio::io_context&   ioc_;
 	boost::asio::ssl::context& ssl_ctx_;
 	std::string                url_;
+	bbget::proxy::config       proxy_config_;
 	ConnectionOps              ops_;
 };
 
