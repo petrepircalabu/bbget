@@ -36,3 +36,6 @@
 .vscode/
 .vs/
 CMakeSettings.json
+
+# vs20xx
+out

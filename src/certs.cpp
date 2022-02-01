@@ -8,7 +8,7 @@ namespace certs {
 #ifdef WIN32
 void add_windows_root_certs(boost::asio::ssl::context& ctx)
 {
-	HCERTSTORE hStore = CertOpenSystemStore(0, "ROOT");
+	HCERTSTORE hStore = CertOpenSystemStore(0, TEXT("ROOT"));
 	if (hStore == NULL) {
 		spdlog::error("CertOpenSystemStore failed");
 		return;
