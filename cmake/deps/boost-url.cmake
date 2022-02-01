@@ -1,7 +1,7 @@
 FetchContent_Declare(
     boost-url
     GIT_REPOSITORY https://github.com/CPPAlliance/url.git
-    GIT_TAG 1093ca5fd36c5976d1bf12b014a6ec4d60896162
+    GIT_TAG b1af763a18e26333e21d0adc9fc4bf5a8de4b944
     GIT_SHALLOW TRUE
 )
 
