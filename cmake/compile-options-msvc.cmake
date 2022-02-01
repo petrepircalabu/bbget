@@ -2,10 +2,10 @@ if(NOT MSVC)
     message(FATAL_ERROR "These options are only valid for MSVC")
 endif()
 
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 add_compile_options(
-    $<$<CONFIG:Debug>:/MTd>
-    $<$<NOT:$<CONFIG:Debug>>:/MT>
+    $<$<CONFIG:Debug>:/MDd>
+    $<$<NOT:$<CONFIG:Debug>>:/MD>
 )
 set(CompilerFlags
         CMAKE_CXX_FLAGS
@@ -15,9 +15,6 @@ set(CompilerFlags
         CMAKE_C_FLAGS_DEBUG
         CMAKE_C_FLAGS_RELEASE
 )
-foreach(CompilerFlag ${CompilerFlags})
-  string(REPLACE "/MD" "/MT" ${CompilerFlag} "${${CompilerFlag}}")
-endforeach()
 
 add_compile_options(
     /EHsc
