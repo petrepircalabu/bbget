@@ -7,19 +7,12 @@ add_compile_options(
     $<$<CONFIG:Debug>:/MDd>
     $<$<NOT:$<CONFIG:Debug>>:/MD>
 )
-set(CompilerFlags
-        CMAKE_CXX_FLAGS
-        CMAKE_CXX_FLAGS_DEBUG
-        CMAKE_CXX_FLAGS_RELEASE
-        CMAKE_C_FLAGS
-        CMAKE_C_FLAGS_DEBUG
-        CMAKE_C_FLAGS_RELEASE
-)
 
 add_compile_options(
     /EHsc
     /sdl
     /GS
+    /bigobj
 )
 
 add_compile_definitions(
