@@ -108,10 +108,8 @@ int main(int argc, char* argv[])
 
 	for (auto&& url : urls) {
 		try {
-			// bbget::http::downloader<bbget::http::outbound::connection_ops> session(
-			//     ioc, ssl_ctx, url, std::move(proxy_config), std::move(ops));
-			// session();
-			bbget::http::outbound::create_connection(ioc, ssl_ctx, url, std::move(proxy_config));
+			auto create = std::make_shared<bbget::http::outbound::create_connection>(ioc, ssl_ctx);
+			(*create)(url, std::move(proxy_config));
 		} catch (const boost::system::system_error& e) {
 			spdlog::error("{}", e.what());
 		} catch (const std::exception& e) {

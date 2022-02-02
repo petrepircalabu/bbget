@@ -19,10 +19,13 @@ namespace bbget {
 namespace http {
 namespace outbound {
 
-template <typename Derived> class connection {
+template <typename Derived, typename CreateConnectionFn> class connection {
 public:
-	connection(boost::asio::io_context& ioc, bbget::proxy::config&& proxy_config)
+	connection(boost::asio::io_context& ioc, bbget::proxy::config&& proxy_config,
+	           const CreateConnectionFn& f)
 	    : ioc_(ioc)
+	    , proxy_config_(std::forward<bbget::proxy::config>(proxy_config))
+	    , f_(f)
 	    , resolver_(boost::asio::make_strand(ioc))
 	{
 	}
@@ -107,6 +110,26 @@ private:
 			return;
 		}
 
+		auto header = parser_.get();
+
+		switch (header.result()) {
+		case boost::beast::http::status::multiple_choices:
+		case boost::beast::http::status::moved_permanently:
+		case boost::beast::http::status::found:
+		case boost::beast::http::status::see_other:
+		case boost::beast::http::status::not_modified:
+		case boost::beast::http::status::temporary_redirect:
+		case boost::beast::http::status::permanent_redirect: {
+			auto location = header.at(boost::beast::http::field::location);
+			spdlog::debug("{}", header);
+			spdlog::info("Redirecting to {}", location);
+			f_(std::string(location), std::move(proxy_config_));
+			return;
+		}
+		default:
+			break;
+		}
+
 		boost::beast::http::async_read(
 		    derived().stream(), buffer_, parser_,
 		    boost::beast::bind_front_handler(&connection::on_read, derived().shared_from_this()));
@@ -120,7 +143,7 @@ private:
 		    .socket()
 		    .shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
 
-		spdlog::debug("{}", parser_.get());
+		spdlog::debug("{}", parser_.release());
 
 		// not_connected happens sometimes so don't bother reporting it.
 		if (ec && ec != boost::beast::errc::not_connected) {
@@ -130,17 +153,24 @@ private:
 
 private:
 	boost::asio::io_context&                                             ioc_;
+	bbget::proxy::config&&                                               proxy_config_;
+	CreateConnectionFn                                                   f_;
 	boost::asio::ip::tcp::resolver                                       resolver_;
 	boost::beast::http::request<boost::beast::http::string_body>         req_;
 	boost::beast::flat_buffer                                            buffer_;
 	boost::beast::http::response_parser<boost::beast::http::string_body> parser_;
 };
 
-class plain_connection : public connection<plain_connection>,
-                         public std::enable_shared_from_this<plain_connection> {
+template <typename CreateConnectionFn>
+class plain_connection
+    : public connection<plain_connection<CreateConnectionFn>, CreateConnectionFn>,
+      public std::enable_shared_from_this<plain_connection<CreateConnectionFn>> {
+	using base_t = connection<plain_connection<CreateConnectionFn>, CreateConnectionFn>;
+
 public:
-	plain_connection(boost::asio::io_context& ioc, bbget::proxy::config&& proxy_config)
-	    : connection<plain_connection>(ioc, std::forward<bbget::proxy::config>(proxy_config))
+	plain_connection(boost::asio::io_context& ioc, bbget::proxy::config&& proxy_config,
+	                 const CreateConnectionFn& f)
+	    : base_t(ioc, std::forward<bbget::proxy::config>(proxy_config), f)
 	    , stream_(boost::asio::make_strand(ioc))
 	{
 	}
@@ -153,19 +183,22 @@ public:
 	void hook_connected()
 	{
 		spdlog::debug("Connection established");
-		connection<plain_connection>::send_request();
+		base_t::send_request();
 	}
 
 private:
 	boost::beast::tcp_stream stream_;
 };
 
-class ssl_connection : public connection<ssl_connection>,
-                       public std::enable_shared_from_this<ssl_connection> {
+template <typename CreateConnectionFn>
+class ssl_connection : public connection<ssl_connection<CreateConnectionFn>, CreateConnectionFn>,
+                       public std::enable_shared_from_this<ssl_connection<CreateConnectionFn>> {
+	using base_t = connection<ssl_connection<CreateConnectionFn>, CreateConnectionFn>;
+
 public:
 	ssl_connection(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_ctx,
-	               bbget::proxy::config&& proxy_config)
-	    : connection<ssl_connection>(ioc, std::forward<bbget::proxy::config>(proxy_config))
+	               bbget::proxy::config&& proxy_config, const CreateConnectionFn& f)
+	    : base_t(ioc, std::forward<bbget::proxy::config>(proxy_config), f)
 	    , stream_(boost::asio::make_strand(ioc), ssl_ctx)
 	{
 	}
@@ -193,47 +226,65 @@ private:
 
 		boost::beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
 
-		connection<ssl_connection>::send_request();
+		base_t::send_request();
 	}
 
 private:
 	boost::beast::ssl_stream<boost::beast::tcp_stream> stream_;
 };
 
-inline void create_connection(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_ctx,
-                              const std::string& url_string, bbget::proxy::config&& proxy_config)
-{
-	auto res = boost::urls::parse_uri(url_string);
-	if (res.has_error())
-		boost::system::throw_exception_from_error(res.error());
-
-	boost::urls::url url = res.value();
-
-	if (!url.has_scheme()) {
-		if (url.has_port() && (url.port_number() == 443) || (url.port_number() == 8443))
-			url.set_scheme(boost::urls::scheme::https);
-		else
-			url.set_scheme(boost::urls::scheme::http);
+class create_connection {
+public:
+	create_connection(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_ctx)
+	    : ioc_(ioc)
+	    , ssl_ctx_(ssl_ctx)
+	{
 	}
 
-	std::string_view host = url.encoded_host();
-	std::string_view port = url.has_port()              ? url.port()
-	    : url.scheme_id() == boost::urls::scheme::https ? "443"
-	                                                    : "80";
+	bool operator()(const std::string& url_string, bbget::proxy::config&& proxy_config)
+	{
+		auto res = boost::urls::parse_uri(url_string);
+		if (res.has_error()) {
+			spdlog::error("{}: error parsing URI {}: {}", __func__, url_string, res.error().what());
+			return false;
+		}
 
-	boost::beast::http::request<boost::beast::http::string_body> req(
-	    boost::beast::http::verb::get, std::string(url.encoded_path()), 11);
-	req.set(boost::beast::http::field::host, host);
-	req.set(boost::beast::http::field::user_agent, "BBGet");
+		boost::urls::url url = res.value();
 
-	if (url.scheme_id() == boost::urls::scheme::http) {
-		auto conn = std::make_shared<plain_connection>(ioc, std::move(proxy_config));
-		conn->start(host, port, std::move(req));
-	} else if (url.scheme_id() == boost::urls::scheme::https) {
-		auto conn = std::make_shared<ssl_connection>(ioc, ssl_ctx, std::move(proxy_config));
-		conn->start(host, port, std::move(req));
+		if (!url.has_scheme()) {
+			if (url.has_port() && (url.port_number() == 443) || (url.port_number() == 8443))
+				url.set_scheme(boost::urls::scheme::https);
+			else
+				url.set_scheme(boost::urls::scheme::http);
+		}
+
+		std::string_view host = url.encoded_host();
+		std::string_view port = url.has_port()              ? url.port()
+		    : url.scheme_id() == boost::urls::scheme::https ? "443"
+		                                                    : "80";
+
+		boost::beast::http::request<boost::beast::http::string_body> req(
+		    boost::beast::http::verb::get, std::string(url.encoded_path()), 11);
+		req.set(boost::beast::http::field::host, host);
+		req.set(boost::beast::http::field::user_agent, "BBGet");
+
+		if (url.scheme_id() == boost::urls::scheme::http) {
+			auto conn = std::make_shared<plain_connection<create_connection>>(
+			    ioc_, std::move(proxy_config), *this);
+			conn->start(host, port, std::move(req));
+		} else if (url.scheme_id() == boost::urls::scheme::https) {
+			auto conn = std::make_shared<ssl_connection<create_connection>>(
+			    ioc_, ssl_ctx_, std::move(proxy_config), *this);
+			conn->start(host, port, std::move(req));
+		}
+
+		return true;
 	}
-}
+
+private:
+	boost::asio::io_context&   ioc_;
+	boost::asio::ssl::context& ssl_ctx_;
+};
 
 } // namespace outbound
 } // namespace http
