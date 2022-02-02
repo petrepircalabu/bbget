@@ -1,6 +1,5 @@
 #include "certs.hpp"
 #include "connection.hpp"
-#include "downloader.hpp"
 #include "proxy.hpp"
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl/context.hpp>
@@ -107,18 +106,20 @@ int main(int argc, char* argv[])
 	spdlog::debug("Use proxy: {}, host: {}  Port: {} Ssl: {} Auth:{}", proxy_config.enabled,
 	              proxy_config.host, proxy_config.port, proxy_config.ssl, proxy_config.auth);
 
-	bbget::http::outbound::connection_ops ops;
 	for (auto&& url : urls) {
 		try {
-			bbget::http::downloader<bbget::http::outbound::connection_ops> session(
-			    ioc, ssl_ctx, url, std::move(proxy_config), std::move(ops));
-			session();
+			// bbget::http::downloader<bbget::http::outbound::connection_ops> session(
+			//     ioc, ssl_ctx, url, std::move(proxy_config), std::move(ops));
+			// session();
+			bbget::http::outbound::create_connection(ioc, ssl_ctx, url, std::move(proxy_config));
 		} catch (const boost::system::system_error& e) {
 			spdlog::error("{}", e.what());
 		} catch (const std::exception& e) {
 			spdlog::error("{}", e.what());
 		}
 	}
+
+	ioc.run();
 
 	return 0;
 }
