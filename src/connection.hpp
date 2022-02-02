@@ -160,6 +160,46 @@ private:
 	boost::beast::tcp_stream stream_;
 };
 
+class ssl_connection : public connection<ssl_connection>,
+                       public std::enable_shared_from_this<ssl_connection> {
+public:
+	ssl_connection(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_ctx,
+	               bbget::proxy::config&& proxy_config)
+	    : connection<ssl_connection>(ioc, std::forward<bbget::proxy::config>(proxy_config))
+	    , stream_(boost::asio::make_strand(ioc), ssl_ctx)
+	{
+	}
+
+	boost::beast::ssl_stream<boost::beast::tcp_stream>& stream()
+	{
+		return stream_;
+	}
+
+	void hook_connected()
+	{
+		spdlog::debug("Connection established");
+		stream_.async_handshake(boost::asio::ssl::stream_base::client,
+		                        boost::beast::bind_front_handler(&ssl_connection::on_handshake,
+		                                                         this->shared_from_this()));
+	}
+
+private:
+	void on_handshake(const boost::beast::error_code ec)
+	{
+		spdlog::debug("{}", __func__);
+		if (ec) {
+			spdlog::error("{}: error {}", __func__, ec);
+		}
+
+		boost::beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
+
+		connection<ssl_connection>::send_request();
+	}
+
+private:
+	boost::beast::ssl_stream<boost::beast::tcp_stream> stream_;
+};
+
 inline void create_connection(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_ctx,
                               const std::string& url_string, bbget::proxy::config&& proxy_config)
 {
@@ -188,6 +228,9 @@ inline void create_connection(boost::asio::io_context& ioc, boost::asio::ssl::co
 
 	if (url.scheme_id() == boost::urls::scheme::http) {
 		auto conn = std::make_shared<plain_connection>(ioc, std::move(proxy_config));
+		conn->start(host, port, std::move(req));
+	} else if (url.scheme_id() == boost::urls::scheme::https) {
+		auto conn = std::make_shared<ssl_connection>(ioc, ssl_ctx, std::move(proxy_config));
 		conn->start(host, port, std::move(req));
 	}
 }
