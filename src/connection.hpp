@@ -21,10 +21,11 @@ namespace outbound {
 
 template <typename Derived, typename CreateConnectionFn> class connection {
 public:
-	connection(boost::asio::io_context& ioc, bbget::proxy::config&& proxy_config,
+	connection(boost::asio::io_context& ioc, bbget::proxy::config&& proxy_config, int max_redirect,
 	           const CreateConnectionFn& f)
 	    : ioc_(ioc)
 	    , proxy_config_(std::forward<bbget::proxy::config>(proxy_config))
+	    , max_redirect_(max_redirect)
 	    , f_(f)
 	    , resolver_(boost::asio::make_strand(ioc))
 	{
@@ -122,8 +123,13 @@ private:
 		case boost::beast::http::status::permanent_redirect: {
 			auto location = header.at(boost::beast::http::field::location);
 			spdlog::debug("{}", header);
+			if (max_redirect_ == 0) {
+				spdlog::error("Redirect count exceeded");
+				return;
+			};
 			spdlog::info("Redirecting to {}", location);
-			f_(std::string(location), std::move(proxy_config_));
+			f_(std::string(location), std::move(proxy_config_), max_redirect_ - 1);
+			// NOTE: Existing connection is not valid past this point.
 			return;
 		}
 		default:
@@ -154,6 +160,7 @@ private:
 private:
 	boost::asio::io_context&                                             ioc_;
 	bbget::proxy::config&&                                               proxy_config_;
+	int                                                                  max_redirect_;
 	CreateConnectionFn                                                   f_;
 	boost::asio::ip::tcp::resolver                                       resolver_;
 	boost::beast::http::request<boost::beast::http::string_body>         req_;
@@ -169,8 +176,8 @@ class plain_connection
 
 public:
 	plain_connection(boost::asio::io_context& ioc, bbget::proxy::config&& proxy_config,
-	                 const CreateConnectionFn& f)
-	    : base_t(ioc, std::forward<bbget::proxy::config>(proxy_config), f)
+	                 int max_redirect, const CreateConnectionFn& f)
+	    : base_t(ioc, std::forward<bbget::proxy::config>(proxy_config), max_redirect, f)
 	    , stream_(boost::asio::make_strand(ioc))
 	{
 	}
@@ -197,8 +204,9 @@ class ssl_connection : public connection<ssl_connection<CreateConnectionFn>, Cre
 
 public:
 	ssl_connection(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_ctx,
-	               bbget::proxy::config&& proxy_config, const CreateConnectionFn& f)
-	    : base_t(ioc, std::forward<bbget::proxy::config>(proxy_config), f)
+	               bbget::proxy::config&& proxy_config, int max_redirect,
+	               const CreateConnectionFn& f)
+	    : base_t(ioc, std::forward<bbget::proxy::config>(proxy_config), max_redirect, f)
 	    , stream_(boost::asio::make_strand(ioc), ssl_ctx)
 	{
 	}
@@ -241,7 +249,8 @@ public:
 	{
 	}
 
-	bool operator()(const std::string& url_string, bbget::proxy::config&& proxy_config)
+	bool operator()(const std::string& url_string, bbget::proxy::config&& proxy_config,
+	                int max_redirect)
 	{
 		auto res = boost::urls::parse_uri(url_string);
 		if (res.has_error()) {
@@ -275,11 +284,11 @@ public:
 
 		if (url.scheme_id() == boost::urls::scheme::http) {
 			auto conn = std::make_shared<plain_connection<create_connection>>(
-			    ioc_, std::move(proxy_config), *this);
+			    ioc_, std::move(proxy_config), max_redirect, *this);
 			conn->start(host, port, std::move(req));
 		} else if (url.scheme_id() == boost::urls::scheme::https) {
 			auto conn = std::make_shared<ssl_connection<create_connection>>(
-			    ioc_, ssl_ctx_, std::move(proxy_config), *this);
+			    ioc_, ssl_ctx_, std::move(proxy_config), max_redirect, *this);
 			conn->start(host, port, std::move(req));
 		}
 
