@@ -28,6 +28,7 @@ public:
 	    , max_redirect_(max_redirect)
 	    , f_(f)
 	    , resolver_(boost::asio::make_strand(ioc))
+	    , queue_(*this)
 	{
 	}
 
@@ -36,25 +37,84 @@ public:
 		return static_cast<Derived&>(*this);
 	}
 
-	void start(std::string_view host, std::string_view port,
-	           boost::beast::http::request<boost::beast::http::string_body>& req)
+	template <bool isRequest, class Body, class Fields>
+	void push_back(boost::beast::http::message<isRequest, Body, Fields>&& msg)
 	{
-		req_ = std::move(req);
+		queue_.push_back(std::move(msg));
+	}
+
+	void start(std::string_view host, std::string_view port)
+	{
 		spdlog::debug("{} host: {}, port:{}", __func__, host, port);
 		resolver_.async_resolve(host, port,
 		                        boost::beast::bind_front_handler(&connection::on_resolve,
 		                                                         derived().shared_from_this()));
 	}
 
+	class queue {
+		// The type-erased, saved work item
+		struct work {
+			virtual ~work()           = default;
+			virtual void operator()() = 0;
+		};
+
+		connection&                        self_;
+		std::vector<std::unique_ptr<work>> items_;
+
+	public:
+		explicit queue(connection& self)
+		    : self_(self)
+		{
+		}
+
+		void pop()
+		{
+			items_.erase(items_.begin());
+			if (!items_.empty())
+				(*items_.front())();
+		}
+
+		template <bool isRequest, class Body, class Fields>
+		void push_back(boost::beast::http::message<isRequest, Body, Fields>&& msg)
+		{
+			struct work_impl : work {
+				connection&                                          self_;
+				boost::beast::http::message<isRequest, Body, Fields> msg_;
+
+				work_impl(connection&                                            self,
+				          boost::beast::http::message<isRequest, Body, Fields>&& msg)
+				    : self_(self)
+				    , msg_(std::move(msg))
+				{
+				}
+
+				void operator()()
+				{
+					spdlog::debug("{}", msg_);
+
+					boost::beast::http::async_write(
+					    self_.derived().stream(), msg_,
+					    boost::beast::bind_front_handler(&connection::on_write,
+					                                     self_.derived().shared_from_this()));
+				}
+			};
+
+			items_.push_back(boost::make_unique<work_impl>(self_, std::move(msg)));
+		}
+
+		void start()
+		{
+			if (items_.size() >= 1)
+				(*items_.front())();
+		}
+	};
+
 protected:
-	void send_request()
+	void start_queue()
 	{
 
 		spdlog::debug("{}", __func__);
-		spdlog::debug("{}", req_);
-		boost::beast::http::async_write(
-		    derived().stream(), req_,
-		    boost::beast::bind_front_handler(&connection::on_write, derived().shared_from_this()));
+		queue_.start();
 	}
 
 private:
@@ -149,7 +209,13 @@ private:
 		    .socket()
 		    .shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
 
-		spdlog::debug("{}", parser_.release());
+		auto res = parser_.release();
+		spdlog::debug("{}", res);
+
+		// 2XX
+		if (res.result_int() / 100 == 2) {
+			queue_.pop();
+		}
 
 		// not_connected happens sometimes so don't bother reporting it.
 		if (ec && ec != boost::beast::errc::not_connected) {
@@ -162,8 +228,8 @@ private:
 	bbget::proxy::config&&                                               proxy_config_;
 	int                                                                  max_redirect_;
 	CreateConnectionFn                                                   f_;
+	queue                                                                queue_;
 	boost::asio::ip::tcp::resolver                                       resolver_;
-	boost::beast::http::request<boost::beast::http::string_body>         req_;
 	boost::beast::flat_buffer                                            buffer_;
 	boost::beast::http::response_parser<boost::beast::http::string_body> parser_;
 };
@@ -190,7 +256,7 @@ public:
 	void hook_connected()
 	{
 		spdlog::debug("Connection established");
-		base_t::send_request();
+		base_t::start_queue();
 	}
 
 private:
@@ -234,7 +300,7 @@ private:
 
 		boost::beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
 
-		base_t::send_request();
+		base_t::start_queue();
 	}
 
 private:
@@ -285,11 +351,16 @@ public:
 		if (url.scheme_id() == boost::urls::scheme::http) {
 			auto conn = std::make_shared<plain_connection<create_connection>>(
 			    ioc_, std::move(proxy_config), max_redirect, *this);
-			conn->start(host, port, std::move(req));
+			conn->push_back(std::move(req));
+			conn->start(host, port);
 		} else if (url.scheme_id() == boost::urls::scheme::https) {
 			auto conn = std::make_shared<ssl_connection<create_connection>>(
 			    ioc_, ssl_ctx_, std::move(proxy_config), max_redirect, *this);
-			conn->start(host, port, std::move(req));
+			conn->push_back(std::move(req));
+			conn->start(host, port);
+		} else {
+			spdlog::error("Unsupported URL scheme id {}", url.scheme());
+			return false;
 		}
 
 		return true;
