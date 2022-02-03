@@ -258,15 +258,20 @@ public:
 				url.set_scheme(boost::urls::scheme::http);
 		}
 
-		std::string_view host = url.encoded_host();
-		std::string_view port = url.has_port()              ? url.port()
+		std::string host = proxy_config.enabled ? proxy_config.host : url.encoded_host();
+		std::string port = proxy_config.enabled             ? proxy_config.port
+		    : url.has_port()                                ? url.port()
 		    : url.scheme_id() == boost::urls::scheme::https ? "443"
 		                                                    : "80";
 
 		boost::beast::http::request<boost::beast::http::string_body> req(
-		    boost::beast::http::verb::get, std::string(url.encoded_path()), 11);
-		req.set(boost::beast::http::field::host, host);
+		    boost::beast::http::verb::get, proxy_config.enabled ? url.string() : url.encoded_path(),
+		    11);
+		req.set(boost::beast::http::field::host, url.encoded_host());
 		req.set(boost::beast::http::field::user_agent, "BBGet");
+		if (proxy_config.enabled && !proxy_config.auth.empty()) {
+			req.set(boost::beast::http::field::proxy_authorization, "Basic: " + proxy_config.auth);
+		}
 
 		if (url.scheme_id() == boost::urls::scheme::http) {
 			auto conn = std::make_shared<plain_connection<create_connection>>(
