@@ -90,7 +90,7 @@ public:
 
 				void operator()()
 				{
-					spdlog::debug("{}", msg_);
+					spdlog::debug("{} Sending request {}", __func__, msg_);
 
 					boost::beast::http::async_write(
 					    self_.derived().stream(), msg_,
@@ -104,8 +104,11 @@ public:
 
 		void start()
 		{
-			if (items_.size() >= 1)
+			spdlog::debug("{} Starting queue", __func__);
+			if (items_.size() >= 1) {
+				spdlog::debug("{} Executing front", __func__);
 				(*items_.front())();
+			}
 		}
 	};
 
@@ -157,8 +160,10 @@ private:
 			return;
 		}
 
+		parser_.reset(new boost::beast::http::response_parser<boost::beast::http::string_body>());
+
 		boost::beast::http::async_read_header(
-		    derived().stream(), buffer_, parser_,
+		    derived().stream(), buffer_, *parser_,
 		    boost::beast::bind_front_handler(&connection::on_read_header,
 		                                     derived().shared_from_this()));
 	}
@@ -171,7 +176,7 @@ private:
 			return;
 		}
 
-		auto header = parser_.get();
+		auto header = parser_->get();
 
 		switch (header.result()) {
 		case boost::beast::http::status::multiple_choices:
@@ -192,12 +197,17 @@ private:
 			// NOTE: Existing connection is not valid past this point.
 			return;
 		}
-		default:
+
+		case boost::beast::http::status::ok:
+			if (!header.has_content_length() && !header.chunked()) {
+				spdlog::debug("{}", header);
+				return queue_.pop();
+			}
 			break;
 		}
 
 		boost::beast::http::async_read(
-		    derived().stream(), buffer_, parser_,
+		    derived().stream(), buffer_, *parser_,
 		    boost::beast::bind_front_handler(&connection::on_read, derived().shared_from_this()));
 	}
 
@@ -209,7 +219,7 @@ private:
 		    .socket()
 		    .shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
 
-		auto res = parser_.release();
+		auto res = parser_->release();
 		spdlog::debug("{}", res);
 
 		// 2XX
@@ -224,14 +234,14 @@ private:
 	}
 
 private:
-	boost::asio::io_context&                                             ioc_;
-	bbget::proxy::config&&                                               proxy_config_;
-	int                                                                  max_redirect_;
-	CreateConnectionFn                                                   f_;
-	queue                                                                queue_;
-	boost::asio::ip::tcp::resolver                                       resolver_;
-	boost::beast::flat_buffer                                            buffer_;
-	boost::beast::http::response_parser<boost::beast::http::string_body> parser_;
+	boost::asio::io_context&       ioc_;
+	bbget::proxy::config&&         proxy_config_;
+	int                            max_redirect_;
+	CreateConnectionFn             f_;
+	queue                          queue_;
+	boost::asio::ip::tcp::resolver resolver_;
+	boost::beast::flat_buffer      buffer_;
+	std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::string_body>> parser_;
 };
 
 template <typename CreateConnectionFn>
@@ -333,20 +343,96 @@ public:
 				url.set_scheme(boost::urls::scheme::http);
 		}
 
-		std::string host = proxy_config.enabled ? proxy_config.host : url.encoded_host();
-		std::string port = proxy_config.enabled             ? proxy_config.port
-		    : url.has_port()                                ? url.port()
-		    : url.scheme_id() == boost::urls::scheme::https ? "443"
-		                                                    : "80";
+		if (!url.has_port())
+			url.set_port(url.scheme_id() == boost::urls::scheme::https ? 443 : 80);
 
-		boost::beast::http::request<boost::beast::http::string_body> req(
-		    boost::beast::http::verb::get, proxy_config.enabled ? url.string() : url.encoded_path(),
-		    11);
-		req.set(boost::beast::http::field::host, url.encoded_host());
-		req.set(boost::beast::http::field::user_agent, "BBGet");
-		if (proxy_config.enabled && !proxy_config.auth.empty()) {
-			req.set(boost::beast::http::field::proxy_authorization, "Basic: " + proxy_config.auth);
+		std::string host = url.encoded_host();
+		std::string port = url.port();
+
+		switch (url.scheme_id()) {
+		case boost::urls::scheme::http:
+			return (proxy_config.enabled)
+			    ? proxy_connection(proxy_config.host, proxy_config.port, url,
+			                        std::move(proxy_config), max_redirect)
+			    : direct_connection(host, port, url, std::move(proxy_config), max_redirect);
+		case boost::urls::scheme::https:
+			return (proxy_config.enabled)
+			    ? tunnel_connection(proxy_config.host, proxy_config.port, url,
+			                        std::move(proxy_config), max_redirect)
+			    : direct_connection(host, port, url, std::move(proxy_config), max_redirect);
+		default:
+			spdlog::error("Unsupported URL scheme id {}", url.scheme());
+			return false;
 		}
+		/*
+		if (url.scheme_id() == boost::urls::scheme::http) {
+		    auto conn = std::make_shared<plain_connection<create_connection>>(
+		        ioc_, std::move(proxy_config), max_redirect, *this);
+
+		    boost::beast::http::request<boost::beast::http::string_body> req(
+		        boost::beast::http::verb::get,
+		        proxy_config.enabled ? url.string() : url.encoded_path(), 11);
+		    req.set(boost::beast::http::field::host, url.encoded_host());
+		    req.set(boost::beast::http::field::user_agent, "BBGet");
+
+		    if (proxy_config.enabled && !proxy_config.auth.empty()) {
+		        req.set(boost::beast::http::field::proxy_authorization,
+		                "Basic: " + proxy_config.auth);
+		    }
+
+		    conn->push_back(std::move(req));
+		    conn->start(host, port);
+
+		} else if (url.scheme_id() == boost::urls::scheme::https) {
+
+		    auto conn = std::make_shared<ssl_connection<create_connection>>(
+		        ioc_, ssl_ctx_, std::move(proxy_config), max_redirect, *this);
+
+		    if (proxy_config.enabled) {
+		        boost::beast::http::request<boost::beast::http::string_body> connect_req(
+		            boost::beast::http::verb::connect, host + ":" + port, 11);
+		        connect_req.set(boost::beast::http::field::host, host);
+		        connect_req.set(boost::beast::http::field::user_agent, "BBGet");
+
+		        if (!proxy_config.auth.empty()) {
+		            connect_req.set(boost::beast::http::field::proxy_authorization,
+		                            "Basic: " + proxy_config.auth);
+		        }
+		        conn->push_back(std::move(connect_req));
+		    }
+
+		    boost::beast::http::request<boost::beast::http::string_body> req(
+		        boost::beast::http::verb::get, url.encoded_path(), 11);
+		    req.set(boost::beast::http::field::host, url.encoded_host());
+		    req.set(boost::beast::http::field::user_agent, "BBGet");
+
+		    conn->push_back(std::move(req));
+		    conn->start(host, port);
+		} else {
+		    spdlog::error("Unsupported URL scheme id {}", url.scheme());
+		    return false;
+		}
+		*/
+		return true;
+	}
+
+private:
+	boost::beast::http::request<boost::beast::http::string_body>
+	create_request(boost::beast::http::verb verb, const std::string& target,
+	               const std::string& host)
+	{
+		boost::beast::http::request<boost::beast::http::string_body> req(verb, target, 11);
+		req.set(boost::beast::http::field::host, host);
+		req.set(boost::beast::http::field::user_agent, "BBGet");
+		return req;
+	}
+
+	bool direct_connection(const std::string& host, const std::string& port,
+	                       const boost::urls::url& url, bbget::proxy::config&& proxy_config,
+	                       int max_redirect)
+	{
+		auto req
+		    = create_request(boost::beast::http::verb::get, url.encoded_path(), url.encoded_host());
 
 		if (url.scheme_id() == boost::urls::scheme::http) {
 			auto conn = std::make_shared<plain_connection<create_connection>>(
@@ -358,9 +444,60 @@ public:
 			    ioc_, ssl_ctx_, std::move(proxy_config), max_redirect, *this);
 			conn->push_back(std::move(req));
 			conn->start(host, port);
-		} else {
-			spdlog::error("Unsupported URL scheme id {}", url.scheme());
+		} else
 			return false;
+
+		return true;
+	}
+
+	bool proxy_connection(const std::string& host, const std::string& port,
+	                      const boost::urls::url& url, bbget::proxy::config&& proxy_config,
+	                      int max_redirect)
+	{
+		auto req = create_request(boost::beast::http::verb::get, url.string(), proxy_config.host);
+		if (!proxy_config.auth.empty())
+			req.set(boost::beast::http::field::proxy_authorization, "Basic: " + proxy_config.auth);
+
+		if (proxy_config.ssl) {
+			auto conn = std::make_shared<ssl_connection<create_connection>>(
+			    ioc_, ssl_ctx_, std::move(proxy_config), max_redirect, *this);
+			conn->push_back(std::move(req));
+			conn->start(host, port);
+		} else {
+			auto conn = std::make_shared<plain_connection<create_connection>>(
+			    ioc_, std::move(proxy_config), max_redirect, *this);
+			conn->push_back(std::move(req));
+			conn->start(host, port);
+		}
+
+		return true;
+	}
+
+	bool tunnel_connection(const std::string& host, const std::string& port,
+	                       const boost::urls::url& url, bbget::proxy::config&& proxy_config,
+	                       int max_redirect)
+	{
+		auto connect = create_request(boost::beast::http::verb::connect,
+		                              url.encoded_host_and_port(), url.encoded_host_and_port());
+		auto req     = create_request(boost::beast::http::verb::get, url.encoded_path(),
+                                  url.encoded_host_and_port());
+
+		if (!proxy_config.auth.empty())
+			connect.set(boost::beast::http::field::proxy_authorization,
+			            "Basic: " + proxy_config.auth);
+
+		if (proxy_config.ssl) {
+			auto conn = std::make_shared<ssl_connection<create_connection>>(
+			    ioc_, ssl_ctx_, std::move(proxy_config), max_redirect, *this);
+			conn->push_back(std::move(connect));
+			conn->push_back(std::move(req));
+			conn->start(host, port);
+		} else {
+			auto conn = std::make_shared<plain_connection<create_connection>>(
+			    ioc_, std::move(proxy_config), max_redirect, *this);
+			conn->push_back(std::move(connect));
+			conn->push_back(std::move(req));
+			conn->start(host, port);
 		}
 
 		return true;
