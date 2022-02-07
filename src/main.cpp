@@ -108,8 +108,9 @@ int main(int argc, char* argv[])
 
 	for (auto&& url : urls) {
 		try {
-			auto create = std::make_shared<bbget::http::outbound::create_connection>(ioc, ssl_ctx);
-			(*create)(url, std::move(proxy_config), 10);
+			auto handler = std::make_shared<bbget::http::outbound::connection_handler>(
+			    ioc, ssl_ctx, std::forward<bbget::proxy::config>(proxy_config));
+			handler->create(url, 10);
 		} catch (const boost::system::system_error& e) {
 			spdlog::error("{}", e.what());
 		} catch (const std::exception& e) {
